@@ -15,6 +15,7 @@ import {
   writeConfig,
 } from "./config.js";
 import { installPilotCodexConfig } from "./codex.js";
+import { startBrowserLogin } from "./login.js";
 import { renderDone } from "./ui.js";
 
 async function commandLogin(options: {
@@ -26,10 +27,28 @@ async function commandLogin(options: {
   const apiUrl = options.apiUrl ?? config.apiUrl ?? defaultApiUrl();
 
   if (!options.token) {
-    const loginUrl = new URL("/cli/login", apiUrl);
-    console.log(`Opening ${loginUrl.toString()}`);
-    await open(loginUrl.toString());
-    console.log("Paste the issued CLI token with `vibeship login --token <token>`.");
+    const login = await startBrowserLogin({ apiUrl });
+    console.log(`Opening ${login.loginUrl}`);
+    await open(login.loginUrl);
+    console.log("Waiting for browser login callback...");
+    const result = await login.waitForResult;
+    await login.close();
+
+    writeConfig({
+      ...config,
+      apiUrl,
+      auth: {
+        token: result.token,
+        email: result.email ?? options.email,
+        expiresAt: result.expiresAt,
+      },
+    });
+    renderDone("Logged in", [
+      ["config", "~/.vibeship/config.json"],
+      ["api", apiUrl],
+      ["email", result.email ?? options.email ?? "unknown"],
+      ["expires", result.expiresAt ?? "unknown"],
+    ]);
     return;
   }
 
@@ -148,7 +167,7 @@ async function commandPilotInstall(options: {
   renderDone("Pilot installed", [
     ["config", file],
     ["mcp", mcpUrl],
-    ["env", "export VIBESHIP_PILOT_TOKEN=<your CLI token>"],
+    ["env", "export VIBESHIP_PILOT_TOKEN=$(vibeship whoami --token-only)"],
   ]);
 }
 
@@ -187,7 +206,17 @@ export async function run(argv: string[]) {
     renderDone("Logged out", [["config", "~/.vibeship/config.json"]]);
   });
 
-  program.command("whoami").action(commandWhoami);
+  program
+    .command("whoami")
+    .option("--token-only", "Print the stored CLI token only")
+    .action((options: { tokenOnly?: boolean }) => {
+      if (options.tokenOnly) {
+        process.stdout.write(`${requireAuth(readConfig()).token}\n`);
+        return;
+      }
+
+      return commandWhoami();
+    });
 
   program
     .command("doctor")

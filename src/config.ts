@@ -64,7 +64,15 @@ export function requireAuth(config = readConfig()): AuthState {
 }
 
 export function defaultApiUrl() {
-  return process.env.VIBESHIP_API_URL ?? "https://vibeship.dev";
+  if (process.env.VIBESHIP_API_URL) {
+    return process.env.VIBESHIP_API_URL;
+  }
+
+  if (process.env.npm_lifecycle_event === "dev") {
+    return "http://localhost:3000";
+  }
+
+  return "https://vibeship.dev";
 }
 
 export function defaultPilotMcpUrl() {
