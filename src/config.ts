@@ -1,0 +1,72 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { z } from "zod";
+
+const authStateSchema = z.object({
+  token: z.string().min(1),
+  email: z.string().email().optional(),
+  clerkUserId: z.string().optional(),
+  expiresAt: z.string().optional(),
+});
+
+export type AuthState = z.infer<typeof authStateSchema>;
+
+export type CliConfig = {
+  auth?: AuthState;
+  apiUrl?: string;
+  pilotMcpUrl?: string;
+};
+
+const configSchema = z.object({
+  auth: authStateSchema.optional(),
+  apiUrl: z.string().url().optional(),
+  pilotMcpUrl: z.string().url().optional(),
+});
+
+export function configDir() {
+  return path.join(os.homedir(), ".vibeship");
+}
+
+export function configPath() {
+  return path.join(configDir(), "config.json");
+}
+
+export function readConfig(): CliConfig {
+  const file = configPath();
+  if (!fs.existsSync(file)) {
+    return {};
+  }
+
+  return configSchema.parse(JSON.parse(fs.readFileSync(file, "utf8")));
+}
+
+export function writeConfig(config: CliConfig) {
+  fs.mkdirSync(configDir(), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(configPath(), `${JSON.stringify(config, null, 2)}\n`, {
+    mode: 0o600,
+  });
+}
+
+export function clearAuth() {
+  const current = readConfig();
+  delete current.auth;
+  writeConfig(current);
+}
+
+export function requireAuth(config = readConfig()): AuthState {
+  if (!config.auth?.token) {
+    throw new Error("Run `vibeship login` before using this command.");
+  }
+
+  return config.auth;
+}
+
+export function defaultApiUrl() {
+  return process.env.VIBESHIP_API_URL ?? "https://vibeship.dev";
+}
+
+export function defaultPilotMcpUrl() {
+  return process.env.VIBESHIP_PILOT_MCP_URL ?? "https://pilot.vibeship.dev/mcp";
+}

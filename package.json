@@ -1,0 +1,37 @@
+{
+  "name": "@vibeship/cli",
+  "version": "0.1.0",
+  "description": "VibeShip CLI for starter initialization and Pilot setup.",
+  "type": "module",
+  "bin": {
+    "vibeship": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "pnpm typecheck && pnpm test"
+  },
+  "dependencies": {
+    "commander": "^14.0.2",
+    "execa": "^9.6.1",
+    "ink": "^6.5.0",
+    "open": "^10.2.0",
+    "react": "^19.2.4",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.25",
+    "@types/react": "^19.2.7",
+    "tsx": "^4.22.4",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
