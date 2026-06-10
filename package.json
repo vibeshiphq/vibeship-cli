@@ -1,20 +1,45 @@
 {
-  "name": "@vibeship/cli",
+  "name": "@vibeshiphq/cli",
   "version": "0.1.0",
   "description": "VibeShip CLI for starter initialization and Pilot setup.",
   "type": "module",
+  "license": "UNLICENSED",
+  "homepage": "https://www.vibeship.today",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/vibeshiphq/vibeship-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vibeshiphq/vibeship-cli/issues"
+  },
+  "keywords": [
+    "vibeship",
+    "cli",
+    "starter",
+    "codex",
+    "mcp"
+  ],
+  "packageManager": "pnpm@9.15.0",
+  "main": "dist/index.js",
+  "exports": "./dist/index.js",
   "bin": {
     "vibeship": "dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "pnpm clean && tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "pnpm typecheck && pnpm test"
+    "check": "pnpm typecheck && pnpm test",
+    "prepack": "pnpm build"
   },
   "dependencies": {
     "commander": "^14.0.2",

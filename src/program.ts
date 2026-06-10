@@ -5,7 +5,7 @@ import { Command } from "commander";
 import { execa } from "execa";
 import open from "open";
 
-import { fetchEntitlements } from "./api.js";
+import { fetchEntitlements, fetchPilotMcpStatus } from "./api.js";
 import {
   clearAuth,
   defaultApiUrl,
@@ -16,7 +16,56 @@ import {
 } from "./config.js";
 import { installPilotCodexConfig } from "./codex.js";
 import { startBrowserLogin } from "./login.js";
-import { renderDone } from "./ui.js";
+import { line, renderDone, renderInfo } from "./ui.js";
+
+const STARTER_REPO_SSH = "git@github.com:vibeshiphq/vibeship-starter.git";
+const STARTER_REPO_HTTPS = "https://github.com/vibeshiphq/vibeship-starter.git";
+
+type CloneSource = {
+  label: string;
+  url: string;
+};
+
+type CloneFailure = CloneSource & {
+  message: string;
+};
+
+export function starterCloneSources(overrideUrl?: string): CloneSource[] {
+  const configured =
+    overrideUrl ?? process.env.VIBESHIP_STARTER_REPO_URL?.trim();
+
+  if (configured) {
+    return [{ label: "custom", url: configured }];
+  }
+
+  return [
+    { label: "ssh", url: STARTER_REPO_SSH },
+    { label: "https", url: STARTER_REPO_HTTPS },
+  ];
+}
+
+function cloneErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
+export function starterCloneRecoveryActions(failures: CloneFailure[]) {
+  const attempted = failures
+    .map((failure) => `${failure.label}: ${failure.url}`)
+    .join("; ");
+
+  return [
+    `Clone attempts failed (${attempted}).`,
+    "Open the Polar customer portal from VibeShip and confirm the GitHub repository access benefit is connected to the right GitHub account.",
+    "Confirm that account can access vibeshiphq/vibeship-starter in GitHub.",
+    "For SSH, run `ssh -T git@github.com` and confirm your key is accepted.",
+    "For HTTPS, run `gh auth status` or sign in to GitHub in your credential manager.",
+    "If access was just granted, wait a minute and rerun `vibeship init`.",
+  ];
+}
 
 async function commandLogin(options: {
   token?: string;
@@ -28,11 +77,22 @@ async function commandLogin(options: {
 
   if (!options.token) {
     const login = await startBrowserLogin({ apiUrl });
-    console.log(`Opening ${login.loginUrl}`);
-    await open(login.loginUrl);
-    console.log("Waiting for browser login callback...");
-    const result = await login.waitForResult;
-    await login.close();
+    renderInfo("Browser login", [
+      line("api", apiUrl),
+      line("callback", "listening on 127.0.0.1"),
+    ]);
+
+    try {
+      await open(login.loginUrl);
+    } catch {
+      renderInfo(
+        "Open this URL",
+        [line("url", login.loginUrl)],
+        ["Complete the browser flow to return a CLI token."],
+      );
+    }
+
+    const result = await login.waitForResult.finally(() => login.close());
 
     writeConfig({
       ...config,
@@ -44,10 +104,10 @@ async function commandLogin(options: {
       },
     });
     renderDone("Logged in", [
-      ["config", "~/.vibeship/config.json"],
-      ["api", apiUrl],
-      ["email", result.email ?? options.email ?? "unknown"],
-      ["expires", result.expiresAt ?? "unknown"],
+      line("config", "~/.vibeship/config.json"),
+      line("api", apiUrl),
+      line("email", result.email ?? options.email ?? "unknown"),
+      line("expires", result.expiresAt ?? "unknown", "muted"),
     ]);
     return;
   }
@@ -61,44 +121,56 @@ async function commandLogin(options: {
     },
   });
   renderDone("Logged in", [
-    ["config", "~/.vibeship/config.json"],
-    ["api", apiUrl],
+    line("config", "~/.vibeship/config.json"),
+    line("api", apiUrl),
   ]);
 }
 
-async function commandWhoami() {
+async function commandWhoami(options: { apiUrl?: string } = {}) {
   const config = readConfig();
   const auth = requireAuth(config);
+  const apiUrl = options.apiUrl ?? config.apiUrl ?? defaultApiUrl();
   const status = await fetchEntitlements({
-    apiUrl: config.apiUrl ?? defaultApiUrl(),
+    apiUrl,
     auth,
   });
   renderDone("Account", [
-    ["email", status.email ?? auth.email ?? "unknown"],
-    ["starter", status.starterAccess ? "yes" : "no"],
-    ["pilot", status.pilotActive ? "active" : "inactive"],
+    line("email", status.email ?? auth.email ?? "unknown"),
+    line("api", apiUrl, "muted"),
+    line("starter", status.starterAccess ? "ready" : "missing", status.starterAccess ? "success" : "warning"),
+    line("pilot", status.pilotActive ? "active" : "inactive", status.pilotActive ? "success" : "warning"),
   ]);
 }
 
-async function commandDoctor(options: { projectDir?: string }) {
+async function commandDoctor(options: { projectDir?: string; apiUrl?: string }) {
   const config = readConfig();
   const projectDir = path.resolve(options.projectDir ?? process.cwd());
   const marker = path.join(projectDir, ".vibeship", "project.json");
   const codexConfig = path.join(projectDir, ".codex", "config.toml");
+  const hasAuth = Boolean(config.auth?.token);
+  const hasProject = fs.existsSync(marker);
+  const hasPilotConfig = fs.existsSync(codexConfig);
 
-  renderDone("Doctor", [
-    ["auth", config.auth?.token ? "present" : "missing"],
-    ["project", fs.existsSync(marker) ? "vibeship starter" : "not detected"],
-    ["pilot config", fs.existsSync(codexConfig) ? codexConfig : "not installed"],
-  ]);
+  renderInfo(
+    "Doctor",
+    [
+      line("auth", hasAuth ? "present" : "missing", hasAuth ? "success" : "warning"),
+      line("api", options.apiUrl ?? config.apiUrl ?? defaultApiUrl(), "muted"),
+      line("project", hasProject ? "vibeship starter" : "not detected", hasProject ? "success" : "warning"),
+      line("pilot config", hasPilotConfig ? codexConfig : "not installed", hasPilotConfig ? "success" : "warning"),
+    ],
+    doctorActions({ hasAuth, hasProject, hasPilotConfig, projectDir }),
+  );
 }
 
 async function cloneStarter({
   targetDir,
   localStarter,
+  repoUrl,
 }: {
   targetDir: string;
   localStarter?: string;
+  repoUrl?: string;
 }) {
   if (fs.existsSync(targetDir) && fs.readdirSync(targetDir).length > 0) {
     throw new Error(`${targetDir} already exists and is not empty.`);
@@ -109,22 +181,42 @@ async function cloneStarter({
     return;
   }
 
-  await execa("git", [
-    "clone",
-    "git@github.com:vibeshiphq/vibeship-starter.git",
-    targetDir,
-  ]);
+  const failures: CloneFailure[] = [];
+  for (const source of starterCloneSources(repoUrl)) {
+    try {
+      await execa("git", ["clone", source.url, targetDir]);
+      return;
+    } catch (error) {
+      failures.push({ ...source, message: cloneErrorMessage(error) });
+      fs.rmSync(targetDir, { recursive: true, force: true });
+    }
+  }
+
+  throw new Error(
+    [
+      "Could not clone the VibeShip starter after entitlement approval.",
+      ...starterCloneRecoveryActions(failures),
+      "Raw git errors:",
+      ...failures.map(
+        (failure) => `- ${failure.label}: ${failure.message.slice(0, 500)}`,
+      ),
+    ].join("\n"),
+  );
 }
 
 async function commandInit(options: {
+  targetDir?: string;
   dir?: string;
   localStarter?: string;
+  repoUrl?: string;
   skipInstall?: boolean;
+  apiUrl?: string;
 }) {
   const config = readConfig();
   const auth = requireAuth(config);
+  const apiUrl = options.apiUrl ?? config.apiUrl ?? defaultApiUrl();
   const status = await fetchEntitlements({
-    apiUrl: config.apiUrl ?? defaultApiUrl(),
+    apiUrl,
     auth,
   });
 
@@ -132,27 +224,47 @@ async function commandInit(options: {
     throw new Error("This account does not have VibeShip starter access.");
   }
 
-  const targetDir = path.resolve(options.dir ?? "vibeship-app");
-  await cloneStarter({ targetDir, localStarter: options.localStarter });
+  const targetDir = path.resolve(options.dir ?? options.targetDir ?? "vibeship-app");
+  renderInfo("Initializing starter", [
+    line("directory", targetDir),
+    line(
+      "source",
+      options.localStarter
+        ? path.resolve(options.localStarter)
+        : starterCloneSources(options.repoUrl)
+            .map((source) => source.url)
+            .join(" then "),
+    ),
+    line("install", options.skipInstall ? "skipped" : "pnpm install"),
+  ]);
+
+  await cloneStarter({
+    targetDir,
+    localStarter: options.localStarter,
+    repoUrl: options.repoUrl,
+  });
 
   if (!options.skipInstall) {
     await execa("pnpm", ["install"], { cwd: targetDir, stdio: "inherit" });
   }
 
-  renderDone("Starter initialized", [
-    ["directory", targetDir],
-    ["next", `cd ${targetDir} && vibeship pilot install`],
-  ]);
+  renderDone(
+    "Starter initialized",
+    [line("directory", targetDir)],
+    [`cd ${targetDir}`, "vibeship pilot install"],
+  );
 }
 
 async function commandPilotInstall(options: {
   projectDir?: string;
   mcpUrl?: string;
+  apiUrl?: string;
 }) {
   const config = readConfig();
   const auth = requireAuth(config);
+  const apiUrl = options.apiUrl ?? config.apiUrl ?? defaultApiUrl();
   const status = await fetchEntitlements({
-    apiUrl: config.apiUrl ?? defaultApiUrl(),
+    apiUrl,
     auth,
   });
 
@@ -164,38 +276,96 @@ async function commandPilotInstall(options: {
   const mcpUrl = options.mcpUrl ?? config.pilotMcpUrl ?? defaultPilotMcpUrl();
   const file = installPilotCodexConfig({ projectDir, mcpUrl });
 
-  renderDone("Pilot installed", [
-    ["config", file],
-    ["mcp", mcpUrl],
-    ["env", "export VIBESHIP_PILOT_TOKEN=$(vibeship whoami --token-only)"],
-  ]);
+  renderDone(
+    "Pilot installed",
+    [
+      line("project", projectDir),
+      line("config", file),
+      line("mcp", mcpUrl),
+    ],
+    [
+      "export VIBESHIP_PILOT_TOKEN=$(vibeship whoami --token-only)",
+      "Open Codex in this project and use VibeShip Pilot.",
+    ],
+  );
 }
 
-async function commandPilotStatus(options: { projectDir?: string }) {
+async function commandPilotStatus(options: {
+  projectDir?: string;
+  apiUrl?: string;
+  mcpUrl?: string;
+}) {
   const config = readConfig();
   const auth = requireAuth(config);
+  const apiUrl = options.apiUrl ?? config.apiUrl ?? defaultApiUrl();
   const status = await fetchEntitlements({
-    apiUrl: config.apiUrl ?? defaultApiUrl(),
+    apiUrl,
     auth,
   });
   const projectDir = path.resolve(options.projectDir ?? process.cwd());
   const codexConfig = path.join(projectDir, ".codex", "config.toml");
+  const hasPilotConfig = fs.existsSync(codexConfig);
+  const mcpUrl = options.mcpUrl ?? config.pilotMcpUrl ?? defaultPilotMcpUrl();
+  const details = [
+    line("subscription", status.pilotActive ? "active" : "inactive", status.pilotActive ? "success" : "warning"),
+    line("project", projectDir),
+    line("config", hasPilotConfig ? codexConfig : "missing", hasPilotConfig ? "success" : "warning"),
+    line("mcp", mcpUrl, "muted"),
+  ];
 
-  renderDone("Pilot status", [
-    ["subscription", status.pilotActive ? "active" : "inactive"],
-    ["config", fs.existsSync(codexConfig) ? codexConfig : "missing"],
-  ]);
+  try {
+    const pilotStatus = await fetchPilotMcpStatus({ mcpUrl, auth });
+    details.push(
+      line(
+        "mcp auth",
+        pilotStatus.authenticated
+          ? "accepted"
+          : `rejected: ${pilotStatus.reason ?? "unknown"}`,
+        pilotStatus.authenticated ? "success" : "warning",
+      ),
+      line(
+        "server",
+        `${pilotStatus.server.name}@${pilotStatus.server.version}`,
+        "muted",
+      ),
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    details.push(line("mcp check", message.slice(0, 140), "warning"));
+  }
+
+  renderDone("Pilot status", details);
 }
 
 export async function run(argv: string[]) {
   const program = new Command();
   program
     .name("vibeship")
-    .description("Initialize VibeShip starter repos and install VibeShip Pilot.")
-    .version("0.1.0");
+    .description("Initialize VibeShip starter apps and install VibeShip Pilot.")
+    .version("0.1.0")
+    .showHelpAfterError()
+    .showSuggestionAfterError()
+    .configureHelp({ sortSubcommands: true })
+    .addHelpText(
+      "after",
+      `
+Examples:
+  $ vibeship login
+  $ vibeship init my-app
+  $ vibeship pilot install --project-dir ./my-app
+  $ vibeship doctor
+
+Environment:
+  VIBESHIP_API_URL            Override the VibeShip API URL.
+  VIBESHIP_PILOT_MCP_URL      Override the Pilot MCP URL.
+  VIBESHIP_STARTER_REPO_URL   Override the starter repository clone URL.
+  VIBESHIP_CLI_OFFLINE=1      Use local entitlement fixtures for development.
+`,
+    );
 
   program
     .command("login")
+    .description("Authenticate this machine with VibeShip.")
     .option("--token <token>", "CLI token issued by VibeShip")
     .option("--email <email>", "Email to store with a development token")
     .option("--api-url <url>", "VibeShip API URL")
@@ -203,43 +373,99 @@ export async function run(argv: string[]) {
 
   program.command("logout").action(() => {
     clearAuth();
-    renderDone("Logged out", [["config", "~/.vibeship/config.json"]]);
+    renderDone("Logged out", [line("config", "~/.vibeship/config.json")]);
   });
 
   program
     .command("whoami")
+    .description("Show the current VibeShip account and entitlement status.")
     .option("--token-only", "Print the stored CLI token only")
-    .action((options: { tokenOnly?: boolean }) => {
+    .option("--api-url <url>", "VibeShip API URL")
+    .action((options: { tokenOnly?: boolean; apiUrl?: string }) => {
       if (options.tokenOnly) {
         process.stdout.write(`${requireAuth(readConfig()).token}\n`);
         return;
       }
 
-      return commandWhoami();
+      return commandWhoami(options);
     });
 
   program
     .command("doctor")
+    .description("Inspect auth, project, and Pilot config for this directory.")
     .option("--project-dir <dir>", "Project directory", process.cwd())
+    .option("--api-url <url>", "VibeShip API URL")
     .action(commandDoctor);
 
   program
-    .command("init")
+    .command("init [targetDir]")
+    .description("Clone the private starter into a new app directory.")
     .option("--dir <dir>", "Target directory")
     .option("--local-starter <dir>", "Use a local starter checkout")
+    .option("--repo-url <url>", "Override the starter repository clone URL")
     .option("--skip-install", "Skip pnpm install")
-    .action(commandInit);
+    .option("--api-url <url>", "VibeShip API URL")
+    .action((targetDir: string | undefined, options) =>
+      commandInit({ ...options, targetDir }),
+    );
 
-  const pilot = program.command("pilot");
+  const pilot = program.command("pilot").description("Manage VibeShip Pilot setup.");
   pilot
     .command("install")
+    .description("Install Pilot MCP config into a Codex project.")
     .option("--project-dir <dir>", "Project directory", process.cwd())
     .option("--mcp-url <url>", "Pilot MCP URL")
+    .option("--api-url <url>", "VibeShip API URL")
     .action(commandPilotInstall);
   pilot
     .command("status")
+    .description("Show Pilot subscription and project config status.")
     .option("--project-dir <dir>", "Project directory", process.cwd())
+    .option("--api-url <url>", "VibeShip API URL")
+    .option("--mcp-url <url>", "Pilot MCP URL")
     .action(commandPilotStatus);
 
-  await program.parseAsync(argv);
+  await program.parseAsync(normalizeArgv(argv));
+}
+
+export function normalizeArgv(argv: string[]) {
+  const [runtime, script, ...args] = argv;
+
+  if (args[0] === "--") {
+    return [runtime, script, ...args.slice(1)];
+  }
+
+  return argv;
+}
+
+function doctorActions({
+  hasAuth,
+  hasProject,
+  hasPilotConfig,
+  projectDir,
+}: {
+  hasAuth: boolean;
+  hasProject: boolean;
+  hasPilotConfig: boolean;
+  projectDir: string;
+}) {
+  const actions: string[] = [];
+
+  if (!hasAuth) {
+    actions.push("vibeship login");
+  }
+
+  if (!hasProject) {
+    actions.push("Run from a starter app, or create one with vibeship init my-app.");
+  }
+
+  if (!hasPilotConfig) {
+    actions.push(
+      projectDir === process.cwd()
+        ? "vibeship pilot install"
+        : `vibeship pilot install --project-dir ${projectDir}`,
+    );
+  }
+
+  return actions;
 }
