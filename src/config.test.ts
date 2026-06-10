@@ -8,7 +8,7 @@ describe("defaults", () => {
   });
 
   it("uses production VibeShip endpoints by default", () => {
-    expect(defaultApiUrl()).toBe("https://vibeship.dev");
+    expect(defaultApiUrl()).toBe("https://www.vibeship.today");
     expect(defaultPilotMcpUrl()).toBe("https://pilot.vibeship.today/mcp");
   });
 

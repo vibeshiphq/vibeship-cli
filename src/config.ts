@@ -72,7 +72,7 @@ export function defaultApiUrl() {
     return "http://localhost:3000";
   }
 
-  return "https://vibeship.dev";
+  return "https://www.vibeship.today";
 }
 
 export function defaultPilotMcpUrl() {
